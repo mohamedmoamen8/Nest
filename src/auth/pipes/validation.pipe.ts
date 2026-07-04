@@ -3,42 +3,42 @@ import {
   Injectable,
   ArgumentMetadata,
   BadRequestException,
+  ValidationError,
 } from '@nestjs/common';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 
 @Injectable()
-export class SanitizeInputPipe implements PipeTransform {
-  transform(value: any, metadata: ArgumentMetadata): any {
-    if (metadata.type === 'param' || metadata.type === 'query') {
-      if (value === null || value === undefined) return value;
-      if (typeof value !== 'string') {
-        throw new BadRequestException(`${metadata.data} must be a string`);
-      }
-      return value.trim().toLowerCase();
+export class AuthValidationPipe implements PipeTransform<any> {
+  async transform(value: any, metadata: ArgumentMetadata) {
+    if (!value) {
+      throw new BadRequestException('Validation failed: No body provided');
     }
 
-    if (metadata.type === 'body' && value && typeof value === 'object') {
-      return this.sanitizeObject(value);
+    const object = plainToInstance(metadata.type, value);
+    const errors = await validate(object);
+
+    if (errors.length > 0) {
+      const messages = this.formatErrors(errors);
+      throw new BadRequestException({
+        statusCode: 400,
+        message: 'Validation failed',
+        errors: messages,
+      });
     }
 
     return value;
   }
 
-  private sanitizeObject(obj: Record<string, any>): Record<string, any> {
-    const result: Record<string, any> = {};
-    for (const key of Object.keys(obj)) {
-      const val = obj[key];
-      if (typeof val === 'string') {
-        result[key] = val.trim();
-      } else if (Array.isArray(val)) {
-        result[key] = val.map((item) =>
-          typeof item === 'string' ? item.trim() : item,
-        );
-      } else if (val && typeof val === 'object') {
-        result[key] = this.sanitizeObject(val);
-      } else {
-        result[key] = val;
+  private formatErrors(errors: ValidationError[]): Record<string, string[]> {
+    const formatted: Record<string, string[]> = {};
+
+    for (const error of errors) {
+      if (error.constraints) {
+        formatted[error.property] = Object.values(error.constraints);
       }
     }
-    return result;
+
+    return formatted;
   }
 }

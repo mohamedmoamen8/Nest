@@ -9,7 +9,12 @@ import { resolve } from 'node:path';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { UsersModule } from './users/users.module';
+import { HealthModule } from './health/health.module';
+import { DatabaseModule } from './DB/database.module';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
+import { TokenModule } from './common/modules/token/token.module';
+import { EmailModule } from './common/email/email.module';
 
 @Module({
   imports: [
@@ -17,7 +22,12 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
       envFilePath: resolve('./config/dev.env'),
       isGlobal: true,
     }),
+    DatabaseModule,
+    TokenModule,
+    EmailModule,
     AuthModule,
+    UsersModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,97 +1,91 @@
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { v4 as uuidv4 } from 'uuid';
-import Redis from 'ioredis';
-import { REDIS_CLIENT } from '../../../DB/redis.provider';
+import * as jwt from 'jsonwebtoken';
+import { Inject } from '@nestjs/common';
+import { REDIS_CLIENT } from '../../DB/redis.provider';
+import { Redis } from 'ioredis';
+
+export interface TokenPayload {
+  sub: string;
+  email: string;
+  role: string;
+  jti?: string;
+}
 
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
 }
 
-export interface JwtPayload {
-  sub: string;
-  email: string;
-  role: string;
-  jti: string;
-}
-
 @Injectable()
 export class TokenService {
-  private readonly BLACKLIST_TTL: number;
+  private readonly jwtSecret: string;
+  private readonly jwtRefreshSecret: string;
+  private readonly jwtExpiration: string;
+  private readonly jwtRefreshExpiration: string;
 
   constructor(
-    private readonly jwtService: JwtService,
-    private readonly config: ConfigService,
-    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    private configService: ConfigService,
+    @Inject(REDIS_CLIENT) private redis: Redis,
   ) {
-    this.BLACKLIST_TTL = this.parseTtl(
-      config.get<string>('JWT_ACCESS_EXPIRES', '15m'),
-    );
+    this.jwtSecret = configService.get<string>('JWT_SECRET') || 'your-secret-key';
+    this.jwtRefreshSecret = configService.get<string>('JWT_REFRESH_SECRET') || 'your-refresh-secret';
+    this.jwtExpiration = configService.get<string>('JWT_EXPIRATION') || '1h';
+    this.jwtRefreshExpiration = configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d';
   }
 
-  generatePair(payload: { sub: string; email: string; role: string }): TokenPair {
-    const accessToken = this.jwtService.sign(
-      { ...payload, jti: uuidv4() },
-      {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET'),
-        expiresIn: this.config.get<string>('JWT_ACCESS_EXPIRES', '15m') as any,
-      },
-    );
+  generatePair(payload: TokenPayload): TokenPair {
+    const jti = this.generateJti();
+    const payloadWithJti = { ...payload, jti };
 
-    const refreshToken = this.jwtService.sign(
-      { ...payload, jti: uuidv4() },
-      {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRES', '7d') as any,
-      },
-    );
+    const accessToken = jwt.sign(payloadWithJti, this.jwtSecret, {
+      expiresIn: this.jwtExpiration,
+    });
+
+    const refreshToken = jwt.sign(payloadWithJti, this.jwtRefreshSecret, {
+      expiresIn: this.jwtRefreshExpiration,
+    });
 
     return { accessToken, refreshToken };
   }
 
-  verifyAccess(token: string): JwtPayload {
+  verifyAccess(token: string): TokenPayload {
     try {
-      return this.jwtService.verify<JwtPayload>(token, {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET'),
-      });
-    } catch {
-      throw new UnauthorizedException('Invalid or expired access token');
+      return jwt.verify(token, this.jwtSecret) as TokenPayload;
+    } catch (error) {
+      throw new Error('Invalid or expired access token');
     }
   }
 
-  verifyRefresh(token: string): JwtPayload {
+  verifyRefresh(token: string): TokenPayload {
     try {
-      return this.jwtService.verify<JwtPayload>(token, {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET'),
-      });
-    } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+      return jwt.verify(token, this.jwtRefreshSecret) as TokenPayload;
+    } catch (error) {
+      throw new Error('Invalid or expired refresh token');
     }
-  }
-
-  decode(token: string): JwtPayload {
-    return this.jwtService.decode(token) as JwtPayload;
   }
 
   getJti(token: string): string {
-    return this.decode(token)?.jti;
+    const decoded = jwt.decode(token) as any;
+    return decoded?.jti || '';
   }
 
   async blacklist(jti: string): Promise<void> {
-    await this.redis.set(`blacklist:${jti}`, '1', 'EX', this.BLACKLIST_TTL);
+    const decoded = jwt.decode(jti, { complete: true }) as any;
+    const expirationTime = decoded?.payload?.exp || Math.floor(Date.now() / 1000) + 3600;
+    const ttl = Math.max(0, expirationTime - Math.floor(Date.now() / 1000));
+
+    if (ttl > 0) {
+      await this.redis.setex(`blacklist:${jti}`, ttl, '1');
+    }
   }
 
   async isBlacklisted(jti: string): Promise<boolean> {
-    const val = await this.redis.get(`blacklist:${jti}`);
-    return !!val;
+    const result = await this.redis.exists(`blacklist:${jti}`);
+    return result === 1;
   }
 
-  private parseTtl(expiry: string): number {
-    const unit = expiry.slice(-1);
-    const value = parseInt(expiry.slice(0, -1), 10);
-    const map: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
-    return value * (map[unit] ?? 60);
+  private generateJti(): string {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 }

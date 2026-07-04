@@ -1,37 +1,50 @@
 import {
+  CanActivate,
   ExecutionContext,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { AuthGuard } from '@nestjs/passport';
-import { IS_PUBLIC_KEY } from '../decorators/auth.decorators';
+import { IS_PUBLIC_KEY } from '../decorators';
+import { ConfigService } from '@nestjs/config';
+import * as jwt from 'jsonwebtoken';
 
 @Injectable()
-export class JwtAuthGuard extends AuthGuard('jwt') {
-  constructor(private readonly reflector: Reflector) {
-    super();
-  }
+export class JwtAuthGuard implements CanActivate {
+  constructor(
+    private reflector: Reflector,
+    private configService: ConfigService,
+  ) {}
 
-  canActivate(context: ExecutionContext) {
+  canActivate(context: ExecutionContext): boolean {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
-
-    if (isPublic) return true;
-
-    return super.canActivate(context);
-  }
-
-  handleRequest<T>(err: any, user: T, info: any): T {
-    if (err || !user) {
-      const message =
-        info?.message === 'No auth token'
-          ? 'No authentication token provided'
-          : info?.message ?? 'Unauthorized';
-      throw err ?? new UnauthorizedException(message);
+    if (isPublic) {
+      return true;
     }
-    return user;
+
+    const request = context.switchToHttp().getRequest();
+    const authHeader = request.headers.authorization;
+
+    if (!authHeader) {
+      throw new UnauthorizedException('Missing authorization header');
+    }
+
+    const [scheme, token] = authHeader.split(' ');
+
+    if (scheme !== 'Bearer' || !token) {
+      throw new UnauthorizedException('Invalid authorization header format');
+    }
+
+    try {
+      const secret = this.configService.get<string>('JWT_SECRET');
+      const payload = jwt.verify(token, secret);
+      request.user = payload;
+      return true;
+    } catch (error) {
+      throw new UnauthorizedException('Invalid or expired token');
+    }
   }
 }
